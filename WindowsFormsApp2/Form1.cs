@@ -28,8 +28,11 @@ namespace WindowsFormsApp2
         public static string strPackets = "";          //The data that is captued
         static int numPackets = 0;
         static int maxPackets = 0;
-        public static List<Double> latList;
-        public static List<Double> longList;
+        int holdProg = 0;
+        public static List<double> latList = new List<double>();
+        public static List<double> longList = new List<double>();
+        public static List<string> ipList = new List<string>();
+        public static List<string> threatList = new List<string>();
 
         public Form1()
         {
@@ -65,6 +68,8 @@ namespace WindowsFormsApp2
 
         private static void device_OnPacketArrival(object sender, CaptureEventArgs e)
         {
+            if (numPackets >= maxPackets) return;
+
             var packet = PacketDotNet.Packet.ParsePacket(e.Packet.LinkLayerType, e.Packet.Data);
             var tcpPacket = (TcpPacket)packet.Extract(typeof(TcpPacket));
 
@@ -73,11 +78,9 @@ namespace WindowsFormsApp2
                 var ipPacket = (IPPacket)tcpPacket.ParentPacket;
                 IPAddress srcIp = ipPacket.SourceAddress;
 
-                Debug.Write(Environment.NewLine);
-                Debug.Write("New IP: " + srcIp.ToString());
-                Debug.Write(Environment.NewLine);
+                if (ipList.Contains(srcIp.ToString())) return;
 
-                var client = new RestClient("https://ipapi.co/" + srcIp.ToString() + "/json/");
+                var client = new RestClient("http://api.ipstack.com/" + srcIp.ToString() + "?access_key=c805296379e5d0095b779113db6392d9");
                 var request = new RestRequest()
                 {
                     Method = Method.GET
@@ -85,20 +88,33 @@ namespace WindowsFormsApp2
 
                 var response = client.Execute(request);
                 var dict = JsonConvert.DeserializeObject<IDictionary>(response.Content);
-            
 
-                if (dict.Contains("latitude") && dict.Contains("longitude"))
+                if (dict["latitude"] != null)
                 {
                     numPackets++;
 
-                    Object latO = dict["latitude"];
-                    Object lonO = dict["longitude"];
+                    double lat = (double)dict["latitude"];
+                    double lon = (double)dict["longitude"];
+                    string ip = (string)dict["ip"];
+                    string threat = "";
 
-                    latList.Add((double)latO);
-                    longList.Add((double)lonO);
+                    try
+                    {
+                        threat = (string)JsonConvert.DeserializeObject<IDictionary>(
+                                    (string)dict["security"])["threat_level"];
+                    }
+                    catch (System.ArgumentNullException)
+                    {
+                        threat = "None";
+                    }
+
+                    latList.Add(lat);
+                    longList.Add(lon);
+                    ipList.Add(ip);
+                    threatList.Add(threat);
 
                     Debug.Write(Environment.NewLine);
-                    Debug.Write("New coordinates: " + (double)latO + ", " + (double)lonO);
+                    Debug.Write("New coordinates: " + lat + ", " + lon);
                     Debug.Write(Environment.NewLine);
                 }
             }
@@ -107,7 +123,6 @@ namespace WindowsFormsApp2
         public void addPins()
         {
             Debug.Write("Displaying pins");
-            GMapOverlay overlay = new GMapOverlay("markers");
 
             for (int i = 0; i < latList.Count; i++)
             {
@@ -115,45 +130,65 @@ namespace WindowsFormsApp2
                 double lon = longList[i];
                 Debug.Write("Pin at: " + lat + ", " + lon);
 
+                GMapOverlay overlay = new GMapOverlay("markers");
+                gmap.Overlays.Add(overlay);
+
                 GMapMarker marker = new GMap.NET.WindowsForms.Markers.GMarkerGoogle(
                     new GMap.NET.PointLatLng(lat, lon),
                     GMap.NET.WindowsForms.Markers.GMarkerGoogleType.red_dot);
 
+                marker.ToolTipText = "\nIP: " + ipList[i] + "\n"
+                    + "Threat Level: " + threatList[i];
+
                 overlay.Markers.Add(marker);
             }
-
-            gmap.Overlays.Add(overlay);
         }
 
         private void gmap_Load(object sender, EventArgs e)
         {
             gmap.MapProvider = GoogleMapProvider.Instance;
             gmap.Manager.Mode = AccessMode.ServerOnly;
-            gmap.Position = new PointLatLng(55.755786121111, 37.617633343333);
             gmap.ShowCenter = false;
             gmap.CanDragMap = true;
             gmap.MarkersEnabled = true;
             gmap.MinZoom = 1;
             gmap.MaxZoom = 20;
-            gmap.Zoom = 1;
+            gmap.Zoom = 2;
         }
 
         private void StartBtn_Click(object sender, EventArgs e)
         {
             if (startBtn.Text == "Start")
             {
+                try
+                {
+                    maxPackets = Convert.ToInt32(numPacketsTxtBox.Text);
+                }
+                catch (System.FormatException)
+                {
+                    MessageBox.Show("The number of packets must be a number you silly billy");
+                    numPacketsTxtBox.Clear();
+                    return;
+                }
+
+                Debug.Write("Max Packets: " + maxPackets);
+
+                progressLabel.Visible = true;
+                progressTxt.Visible = true;
+                progressTxt.Text = "0/" + maxPackets;
+
+                timer1.Enabled = true;
                 string filter = "ip and tcp";
                 device.Filter = filter;
                 device.StartCapture();
                 startBtn.Text = "Stop";
-                Debug.Write("Start");
             }
 
             else
             {
                 device.StopCapture();
                 startBtn.Text = "Start";
-                maxPackets = Convert.ToInt32(numPacketsTxtBox.Text);
+                timer1.Enabled = false;
             }
         }
 
@@ -177,13 +212,31 @@ namespace WindowsFormsApp2
 
         private void Timer1_Tick(object sender, EventArgs e)
         {
+            if (numPackets != holdProg)
+            {
+                progressTxt.Text = numPackets + "/" + maxPackets;
+                holdProg = numPackets;
+            }
+
             if (numPackets >= maxPackets)
             {
+                timer1.Enabled = false;
+                progressTxt.Text = "Done!";
                 Debug.Write("Done");
                 device.StopCapture();
                 startBtn.Text = "Start";
                 addPins();
+                latList.Clear();
+                longList.Clear();
+                ipList.Clear();
+                threatList.Clear();
+                numPackets = 0;
             }
+        }
+
+        private void Button1_Click(object sender, EventArgs e)
+        {
+            gmap.Overlays.Clear();
         }
     }
 }
